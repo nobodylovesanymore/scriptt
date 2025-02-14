@@ -1805,3 +1805,357 @@ while true do
 end
 
 return magic
+
+local player = game.Players.LocalPlayer
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local lastKnownPosition = nil
+local wantedBeforeStomp = nil
+local isStomping = false
+local isKilling = false
+local isGrabbing = false
+local stopAllActions = false
+local runService = game:GetService("RunService")
+local players = game:GetService("Players")
+
+function getWantedValue()
+    local stats = player:FindFirstChild("leaderstats")
+    local wanted = stats and stats:FindFirstChild("Wanted")
+    return wanted and wanted.Value or 0
+end
+
+function attemptStomp()
+    ReplicatedStorage.MainEvent:FireServer("Stomp")
+end
+
+function attemptgrab()
+    ReplicatedStorage.MainEvent:FireServer("Grabbing", false)
+end
+
+function teleportToPosition(pos)
+    local character = player.Character
+    local rootPart = character and character:FindFirstChild("HumanoidRootPart")
+    if rootPart then
+        rootPart.CFrame = CFrame.new(pos)
+    end
+end
+
+function freezePlayer()
+    local character = player.Character
+    local humanoid = character and character:FindFirstChild("Humanoid")
+    if humanoid then
+        humanoid.WalkSpeed = 0
+        humanoid.JumpPower = 0
+    end
+end
+
+function unfreezePlayer()
+    local character = player.Character
+    local humanoid = character and character:FindFirstChild("Humanoid")
+    if humanoid then
+        humanoid.WalkSpeed = 16
+        humanoid.JumpPower = 50
+    end
+end
+
+function shootTarget(target)
+    local character = player.Character
+    local rootPart = character and character:FindFirstChild("HumanoidRootPart")
+    local tool = character and character:FindFirstChildOfClass("Tool") or player.Backpack:FindFirstChildOfClass("Tool")
+
+    if tool and tool:FindFirstChild("Handle") and rootPart and target and target.Character then
+        local targetHead = target.Character:FindFirstChild("Head")
+        if targetHead then
+            local direction = (targetHead.Position - rootPart.Position).unit
+            ReplicatedStorage:WaitForChild("MainEvent"):FireServer("ShootGun", tool.Handle, rootPart.Position, targetHead.Position, targetHead, direction)
+        end
+    end
+end
+
+function stompKnockedTarget(target)
+    local lowerTorso = target.Character and target.Character:FindFirstChild("LowerTorso")
+    if not lowerTorso then return end
+
+    local initialPosition = lastKnownPosition or player.Character.HumanoidRootPart.Position
+
+    teleportToPosition(lowerTorso.Position + Vector3.new(0, 3, 0))
+    task.wait(0.2)
+
+    local stompCount = 0
+    while stompCount < 3 do
+        if stopAllActions then break end
+        teleportToPosition(lowerTorso.Position + Vector3.new(0, 3, 0))
+        attemptStomp()
+        stompCount += 1
+    end
+
+    if initialPosition then
+        teleportToPosition(initialPosition)
+    end
+end
+
+function isTargetKnocked(character)
+    local bodyEffects = character:FindFirstChild("BodyEffects")
+    local koValue = bodyEffects and bodyEffects:FindFirstChild("K.O")
+    return koValue and koValue.Value
+end
+
+function spamStompUntilConfirmed(target)
+    local lowerTorso = target.Character and target.Character:FindFirstChild("LowerTorso")
+    if not lowerTorso then return end
+
+    wantedBeforeStomp = getWantedValue()
+    local maxAttempts = 400
+    local attempts = 0
+
+    while attempts < maxAttempts do
+        if stopAllActions then break end
+        teleportToPosition(lowerTorso.Position + Vector3.new(0, 3, 0))
+        attemptStomp()
+        task.wait()
+        attempts += 1
+
+        if getWantedValue() > wantedBeforeStomp then
+            teleportToPosition(lastKnownPosition)
+            return
+        end
+    end
+
+    if lastKnownPosition then
+        teleportToPosition(lastKnownPosition)
+    end
+end
+
+function fastOrbitTarget(target)
+    local character = player.Character
+    local rootPart = character and character:FindFirstChild("HumanoidRootPart")
+    
+    if rootPart and target and target.Character then
+        workspace.Camera.CameraSubject = target.Character.Humanoid
+        local originalPosition = lastKnownPosition or rootPart.Position
+        freezePlayer()
+
+        local orbiting = true
+        local angle = 0
+        local radius = 5
+        local height = 6
+        local maxDuration = 10
+        local startTime = tick()
+
+        while orbiting and tick() - startTime < maxDuration do
+            if stopAllActions then break end
+            if isTargetKnocked(target.Character) then
+                orbiting = false
+                break
+            end
+
+            angle = angle + math.rad(50)
+            local xOffset = math.cos(angle) * radius
+            local zOffset = math.sin(angle) * radius
+            local targetRoot = target.Character:FindFirstChild("HumanoidRootPart")
+
+            if targetRoot then
+                rootPart.CFrame = CFrame.new(targetRoot.Position + Vector3.new(xOffset, height, zOffset))
+                rootPart.CFrame = CFrame.lookAt(rootPart.Position, targetRoot.Position)
+                shootTarget(target)
+            end
+
+            task.wait()
+        end
+        
+        workspace.Camera.CameraSubject = player.Character.Humanoid
+        unfreezePlayer()
+    end
+end
+
+function spamGrabuntilgrabbed(target)
+    local lowerTorso = target.Character and target.Character:FindFirstChild("LowerTorso")
+    if not lowerTorso then return end
+
+    while target.Character:FindFirstChild("GRABBING_CONSTRAINT") == nil do
+        if stopAllActions then break end
+        teleportToPosition(lowerTorso.Position + Vector3.new(0, 3, 0))
+        attemptgrab();
+        task.wait(0.3)
+
+        if target.Character:FindFirstChild("GRABBING_CONSTRAINT") ~= nil then
+            teleportToPosition(lastKnownPosition)
+            return
+        end
+    end
+
+    if lastKnownPosition then
+        teleportToPosition(lastKnownPosition)
+    end
+end
+
+function stompPlayer(targetName)
+    local target = nil
+    local character = player.Character
+    local rootPart = character and character:FindFirstChild("HumanoidRootPart")
+
+    if not isStomping and rootPart then
+        lastKnownPosition = rootPart.Position
+        isStomping = true
+    end
+
+    local lowerTargetName = string.lower(targetName)
+
+    for _, plr in pairs(game.Players:GetPlayers()) do
+        local lowerName = string.lower(plr.Name)
+        local lowerDisplayName = string.lower(plr.DisplayName)
+        if string.find(lowerName, lowerTargetName, 1, true) or 
+           string.find(lowerDisplayName, lowerTargetName, 1, true) then
+            target = plr
+            break
+        end
+    end
+
+    if not target then
+        isStomping = false
+        return
+    end
+
+    if isTargetKnocked(target.Character) then
+        stompKnockedTarget(target)
+    else
+        fastOrbitTarget(target)
+        if isTargetKnocked(target.Character) then
+            spamStompUntilConfirmed(target)
+        end
+    end
+
+    isStomping = false
+end
+
+
+function grabplayer(targetName)
+    local target = nil
+    local character = player.Character
+    local rootPart = character and character:FindFirstChild("HumanoidRootPart")
+
+    if not isGrabbing and rootPart then
+        lastKnownPosition = rootPart.Position
+        isGrabbing = true
+    end
+
+    local lowerTargetName = string.lower(targetName)
+
+    for _, plr in pairs(game.Players:GetPlayers()) do
+        local lowerName = string.lower(plr.Name)
+        local lowerDisplayName = string.lower(plr.DisplayName)
+        if string.find(lowerName, lowerTargetName, 1, true) or 
+           string.find(lowerDisplayName, lowerTargetName, 1, true) then
+            target = plr
+            break
+        end
+    end
+
+    if not target then
+        isGrabbing = false
+        return
+    end
+
+    if isTargetKnocked(target.Character) then
+        attemptgrab(target)
+    else
+        fastOrbitTarget(target)
+        if isTargetKnocked(target.Character) then
+            spamGrabuntilgrabbed(target)
+        end
+    end
+
+    isGrabbing = false
+end
+
+function killplayer(targetName)
+    local target = nil
+    local character = player.Character
+    local rootPart = character and character:FindFirstChild("HumanoidRootPart")
+
+    if not (isGrabbing or isStomping or isKilling) and rootPart then
+        lastKnownPosition = rootPart.Position
+        isKilling = true
+    end
+
+    local lowerTargetName = string.lower(targetName)
+
+    for _, plr in pairs(game.Players:GetPlayers()) do
+        local lowerName = string.lower(plr.Name)
+        local lowerDisplayName = string.lower(plr.DisplayName)
+        if string.find(lowerName, lowerTargetName, 1, true) or 
+           string.find(lowerDisplayName, lowerTargetName, 1, true) then
+            target = plr
+            break
+        end
+    end
+
+    if not target then
+        isKilling = false
+        return
+    end
+
+    if not isTargetKnocked(target.Character) then
+        fastOrbitTarget(target)
+    end
+
+    task.spawn(function()
+        while not isTargetKnocked(target.Character) do
+            task.wait()
+        end
+
+        if lastKnownPosition then
+            teleportToPosition(lastKnownPosition)
+        end
+    end)
+
+    isKilling = false
+end
+
+function isGunEquipped()
+    local character = player.Character
+    if character then
+        local tool = character:FindFirstChildOfClass("Tool")
+        return tool and tool:FindFirstChild("Handle") ~= nil
+    end
+    return false
+end
+
+runService.Heartbeat:Connect(function()
+    player.Character.Humanoid:SetStateEnabled(Enum.HumanoidStateType.FallingDown, false)
+    player.Character.Humanoid:SetStateEnabled(Enum.HumanoidStateType.Ragdoll, false)
+end)
+
+game:GetService("Players").LocalPlayer.Chatted:Connect(function(msg)
+    local args = string.split(msg, " ")
+    if args[1] == "!stomp" and args[2] then
+        stopAllActions = false
+        for _, object in pairs(workspace:GetDescendants()) do
+            if object:IsA("Seat") then
+                object:Destroy()
+            end
+        end
+        stompPlayer(args[2])
+    elseif (args[1] == "!grab" or args[1] == "!bring") and args[2] then
+        stopAllActions = false
+        for _, object in pairs(workspace:GetDescendants()) do
+            if object:IsA("Seat") then
+                object:Destroy()
+            end
+        end
+        grabplayer(args[2])
+    elseif args[1] == "!kill" then
+        stopAllActions = false
+        for _, object in pairs(workspace:GetDescendants()) do
+            if object:IsA("Seat") then
+                object:Destroy()
+            end
+        end
+        killplayer(args[2])
+    elseif args[1] == "!stop" then
+        stopAllActions = true
+        unfreezePlayer()
+        if lastKnownPosition then
+            teleportToPosition(lastKnownPosition)
+        end
+    end
+end)
